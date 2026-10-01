@@ -1,9 +1,13 @@
-#include "out.h"
+
+#include "shell.h"
 
 #define VGA_WIDTH 80
 #define VGA_HEIGHT 25
 
-console_t *main_console;
+typedef unsigned char u8;
+typedef unsigned short u16;
+
+static console_t *main_console;
 static volatile u16 *const VGA = (volatile u16 *)0xB8000;
 
 static inline void outb(u16 port, u8 v) {
@@ -28,10 +32,16 @@ static void history_push(console_t *console, char character, u8 color)
     console->history[index].color = color;
 }
 
-void init(console_t *console)
+void set_cursor(int row, int column)
 {
-    main_console = console;
-    reaload();
+    u16 position = (u16)(row * 80 + column);
+
+    outb(0x3D4, 0x0A);
+    outb(0x3D5, 0x0E);  // réactive le curseur, masqué au démarrage
+    outb(0x3D4, 0x0F);
+    outb(0x3D5, (u8)position);
+    outb(0x3D4, 0x0E);
+    outb(0x3D5, (u8)(position >> 8));
 }
 
 console_t *get_console(void)
@@ -131,21 +141,44 @@ void draw_input_line(const char *text)
     set_cursor(VGA_HEIGHT - 1, (int)column);
 }
 
-void set_cursor(int row, int column)
-{
-    u16 position = (u16)(row * 80 + column);
-
-    outb(0x3D4, 0x0A);
-    outb(0x3D5, 0x0E);  // réactive le curseur, masqué au démarrage
-    outb(0x3D4, 0x0F);
-    outb(0x3D5, (u8)position);
-    outb(0x3D4, 0x0E);
-    outb(0x3D5, (u8)(position >> 8));
-}
-
 void test()
 {
     println("Test out.c", 0x0F);
     print("Result : ", 0x0F);
     println("OK", 0x0A);
+}
+ 
+static char input[79];
+static unsigned int input_length = 0;
+
+void keyboad_callback(const kernel_keyboard_event_t *event)
+{
+    if (event->type == KERNEL_KEY_EVENT_CHARACTER) {
+            if (input_length < sizeof(input) - 1) {
+                input[input_length++] = event->character;
+                input[input_length] = '\0';
+                draw_input_line(input);
+            }
+        } else if (event->type == KERNEL_KEY_EVENT_BACKSPACE) {
+            if (input_length) {
+                input[--input_length] = '\0';
+                draw_input_line(input);
+            }
+        } else if (event->type == KERNEL_KEY_EVENT_ENTER) {
+            print("> ", 0x0A);
+            print(input, 0x0F);
+            println("", 0x0F);
+            input_length = 0;
+            input[0] = '\0';
+            draw_input_line(input);
+        }
+}
+
+void init(console_t *console)
+{
+	main_console = console;
+    input[0] = '\0';
+    keyboard_register_callback(keyboad_callback);
+    keyboard_init();
+    reaload();
 }

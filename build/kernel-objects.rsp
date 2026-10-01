@@ -1,1 +1,3 @@
-"build\obj\boot.o"
+"build\obj\kernel\main.o"
+"build\obj\kernel\shell.o"
+"build\obj\kernel\keyboard\keyboard.o"

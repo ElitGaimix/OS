@@ -125,6 +125,7 @@ gdt_start:
     db 0x00, 0x9A, 0xCF, 0x00
     dw 0xFFFF, 0x0000               ; 0x10 : donnees 32 bits, base 0, limite 4 Go
     db 0x00, 0x92, 0xCF, 0x00
+    dq 0x00AF9A000000FFFF           ; 0x18 : code 64 bits
 gdt_end:
 gdt_descriptor:
     dw gdt_end - gdt_start - 1

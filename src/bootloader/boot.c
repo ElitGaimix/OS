@@ -1,6 +1,7 @@
 /* boot.c - execute en mode protege 32 bits, charge en 0x10000 par bootloader.asm
- * Le bootloader 16 bits ne peut pas depasser 1 Mo : ici on lit le disque
- * nous-memes (ATA PIO) pour charger la suite ou on veut, y compris au-dela de 1 Mo. */
+ * Le bootloader asm as acces a seulement 1Mio de ram et ne peut pas donc charger un gros kernel
+ * On vient donc charger ce fichier qui va a sont tour charger un kernel (Maintenant qu'on a environ 4Gio de RAM)
+ * Pas forcement utile mais permet d'être sur qu'on aura pas de soucis si jamais le kernel devient assez gros */
 
 #include <stdarg.h>
 
@@ -19,41 +20,6 @@ typedef struct {
     u32 type;
     u32 attributes;
 } e820_entry;
-
-typedef struct {
-    char character;
-    u8 color;
-} console_char_t;
-
-typedef struct {
-    const char *name;
-    const char *permission;
-
-    console_char_t history[CONSOLE_HISTORY_CAPACITY];
-    unsigned int history_start;
-    unsigned int history_length;
-} console_t;
-
-static void history_push(console_t *console, char character, u8 color)
-{
-    unsigned int index;
-
-    if (console->history_length < CONSOLE_HISTORY_CAPACITY) {
-        index = (console->history_start + console->history_length)
-                % CONSOLE_HISTORY_CAPACITY;
-        console->history_length++;
-    } else {
-        index = console->history_start;
-        console->history_start =
-            (console->history_start + 1) % CONSOLE_HISTORY_CAPACITY;
-    }
-
-    console->history[index].character = character;
-    console->history[index].color = color;
-}
-
-console_t history;
-int lastrow = 0;
 
 /* Lit un octet depuis un port materiel. */
 static inline u8 inb(u16 port) {
@@ -88,9 +54,6 @@ static void clear_screen(void) {
 // Don't forget to place a (const char *)0 at the end of the arguments list, otherwise it will crash.
 /* Affiche des textes colores sur une ligne VGA, jusqu'au pointeur nul final. */
 static void print(int row, const char *text, ...) {
-    if (row != lastrow)
-        history_push(&history, '\n', 0x00);
-    lastrow = row;
     va_list args;
     int column = 0;
 
@@ -99,7 +62,6 @@ static void print(int row, const char *text, ...) {
         int color = va_arg(args, int);
         for (int i = 0; text[i] && column < 80; i++){
             VGA[row * 80 + column++] = (u16)(((u8)color << 8) | (u8)text[i]);
-            history_push(&history, text[i], color);
         }
         text = va_arg(args, const char *);
     }
@@ -108,7 +70,7 @@ static void print(int row, const char *text, ...) {
 
 //print avec un prefixe specifique a boot.c
 #define printfp(row, ...) \
-    print((row), "[", 0x0F, __FILE__, 0x0B, "] >>> ", 0x0F, __VA_ARGS__)
+    print((row), "[", 0x0F, "boot.c", 0x0B, "] >>> ", 0x0F, __VA_ARGS__)
 
 /* Affiche un entier non signe en base 10 a la position VGA indiquee. */
 static void print_number(int row, int column, u32 value, u8 color) {
@@ -123,7 +85,6 @@ static void print_number(int row, int column, u32 value, u8 color) {
     while (count && column < 80) {
         char digit = digits[--count];
         VGA[row * 80 + column++] = (u16)((color << 8) | (u8)digit);
-        history_push(&history, (u8)digit, color);
     }
 }
 
@@ -156,11 +117,32 @@ static u32 usable_ram_mib(u32 map_addr, u32 map_count) {
 #define ATA_LBA2   0x1F5
 #define ATA_DRIVE  0x1F6
 #define ATA_CMD    0x1F7   /* ecriture : commande, lecture : statut */
-#define ENTRY_LBA 16
-#define ENTRY_ADDRESS 0x100000
-#ifndef ENTRY_SECTORS
-#define ENTRY_SECTORS 1
+#define KERNEL_LBA 16
+#define KERNEL_ADDRESS 0x100000
+#define PML4_ADDRESS 0x70000
+#define PDPT_ADDRESS 0x71000
+#define PD_ADDRESS 0x72000
+#ifndef KERNEL_SECTORS
+#define KERNEL_SECTORS 1
 #endif
+
+__attribute__((noreturn)) void enter_long_mode(u32 pml4_address, u32 entry_address);
+
+/* Mappe les premiers 1 Gio en identite avec des pages de 2 Mio. */
+static void init_long_mode_pages(void) {
+    u64 *pml4 = (u64 *)PML4_ADDRESS;
+    u64 *pdpt = (u64 *)PDPT_ADDRESS;
+    u64 *pd = (u64 *)PD_ADDRESS;
+
+    for (u32 i = 0; i < 512; i++) {
+        pml4[i] = 0;
+        pdpt[i] = 0;
+        pd[i] = ((u64)i << 21) | 0x83;
+    }
+
+    pml4[0] = PDPT_ADDRESS | 0x03;
+    pdpt[0] = PD_ADDRESS | 0x03;
+}
 
 /* Attend que le disque ATA soit pret a transferer des donnees. */
 static int ata_wait_drq(void) {
@@ -242,9 +224,10 @@ void boot_main(u32 map_addr, u32 map_count) {
     else
         printfp(4, "Lecture disque a 1 Mo (ATA PIO) : ",0X0F, "ECHEC", 0x0C, (const char *)0);
 
-    if (ata_read(ENTRY_LBA, ENTRY_SECTORS, (void *)ENTRY_ADDRESS) == 0){
-        history_push(&history, '\n', 0x00);
-        ((void (*)(console_t *))ENTRY_ADDRESS)(&history);
-    } else
-        printfp(5, "Echec du chargement de entry.bin", 0x0C, (const char *)0);
+    if (ata_read(KERNEL_LBA, KERNEL_SECTORS, (void *)KERNEL_ADDRESS) == 0) {
+        init_long_mode_pages();
+        enter_long_mode(PML4_ADDRESS, KERNEL_ADDRESS);
+    } else {
+        printfp(5, "Echec du chargement de kernel/main.bin", 0x0C, (const char *)0);
+    }
 }
