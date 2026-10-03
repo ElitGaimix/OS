@@ -19,6 +19,6 @@ typedef void (*keyboard_event_callback_t)(const kernel_keyboard_event_t *event);
 void keyboard_init(void);
 int keyboard_register_callback(keyboard_event_callback_t callback);
 void keyboard_poll(void);
-int keyboard_wait_event(kernel_keyboard_event_t *event);
+void keyboard_wait_for_interrupt(void);
 
 #endif

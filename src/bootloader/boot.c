@@ -4,6 +4,7 @@
  * Pas forcement utile mais permet d'être sur qu'on aura pas de soucis si jamais le kernel devient assez gros */
 
 #include <stdarg.h>
+#include <e820.h>
 
 #define CONSOLE_HISTORY_CAPACITY 2048
 
@@ -11,15 +12,6 @@ typedef unsigned char  u8;
 typedef unsigned short u16;
 typedef unsigned int   u32;
 typedef unsigned long long u64;
-
-typedef struct {
-    u32 base_low;
-    u32 base_high;
-    u32 length_low;
-    u32 length_high;
-    u32 type;
-    u32 attributes;
-} e820_entry;
 
 /* Lit un octet depuis un port materiel. */
 static inline u8 inb(u16 port) {
@@ -90,7 +82,7 @@ static void print_number(int row, int column, u32 value, u8 color) {
 
 /* Calcule la RAM utilisable sous 4 Gio a partir de la carte E820. */
 static u32 usable_ram_mib(u32 map_addr, u32 map_count) {
-    const e820_entry *entries = (const e820_entry *)map_addr;
+    const e820_entry_t *entries = (const e820_entry_t *)map_addr;
     const u64 address_limit = 0x100000000ULL;
     u64 total = 0;
 
@@ -125,8 +117,16 @@ static u32 usable_ram_mib(u32 map_addr, u32 map_count) {
 #ifndef KERNEL_SECTORS
 #define KERNEL_SECTORS 1
 #endif
+#define USER_ADDRESS 0x400000
+#ifndef USER_LBA
+#define USER_LBA 2048
+#endif
+#ifndef USER_SECTORS
+#define USER_SECTORS 1
+#endif
 
-__attribute__((noreturn)) void enter_long_mode(u32 pml4_address, u32 entry_address);
+__attribute__((noreturn)) void enter_long_mode(
+    u32 pml4_address, u32 entry_address, u32 map_addr, u32 map_count);
 
 /* Mappe les premiers 1 Gio en identite avec des pages de 2 Mio. */
 static void init_long_mode_pages(void) {
@@ -140,8 +140,11 @@ static void init_long_mode_pages(void) {
         pd[i] = ((u64)i << 21) | 0x83;
     }
 
-    pml4[0] = PDPT_ADDRESS | 0x03;
-    pdpt[0] = PD_ADDRESS | 0x03;
+    pml4[0] = PDPT_ADDRESS | 0x07;
+    pdpt[0] = PD_ADDRESS | 0x07;
+
+    /* Region 0x400000-0x5FFFFF accessible au ring 3 (APRES la boucle) */
+    pd[2] = ((u64)2 << 21) | 0x87;
 }
 
 /* Attend que le disque ATA soit pret a transferer des donnees. */
@@ -224,10 +227,11 @@ void boot_main(u32 map_addr, u32 map_count) {
     else
         printfp(4, "Lecture disque a 1 Mo (ATA PIO) : ",0X0F, "ECHEC", 0x0C, (const char *)0);
 
-    if (ata_read(KERNEL_LBA, KERNEL_SECTORS, (void *)KERNEL_ADDRESS) == 0) {
+    if (ata_read(KERNEL_LBA, KERNEL_SECTORS, (void *)KERNEL_ADDRESS) == 0
+        && ata_read(USER_LBA, USER_SECTORS, (void *)USER_ADDRESS) == 0) {
         init_long_mode_pages();
-        enter_long_mode(PML4_ADDRESS, KERNEL_ADDRESS);
+        enter_long_mode(PML4_ADDRESS, KERNEL_ADDRESS, map_addr, map_count);
     } else {
-        printfp(5, "Echec du chargement de kernel/main.bin", 0x0C, (const char *)0);
+        printfp(5, "Echec du chargement du kernel ou du programme user", 0x0C, (const char *)0);
     }
 }

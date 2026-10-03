@@ -1,38 +1,16 @@
-#include "keyboard.h"
+#include <kernel/drivers/inputs/keyboard.h>
+#include <kernel/interrupts.h>
 
 typedef unsigned char u8;
 typedef unsigned short u16;
 typedef unsigned int u32;
 typedef unsigned long long u64;
 
-#define IDT_ENTRIES 256
 #define KEYBOARD_VECTOR 0x21
 #define KEYBOARD_QUEUE_SIZE 64
 #define KEYBOARD_QUEUE_MASK (KEYBOARD_QUEUE_SIZE - 1)
 #define KEYBOARD_CALLBACK_CAPACITY 16
 
-typedef struct {
-	u16 offset_low;
-	u16 selector;
-	u8 ist;
-	u8 attributes;
-	u16 offset_middle;
-	u32 offset_high;
-	u32 reserved;
-} __attribute__((packed)) idt_entry_t;
-
-typedef struct {
-	u16 limit;
-	u64 base;
-} __attribute__((packed)) idtr_t;
-
-typedef struct {
-	u64 instruction_pointer;
-	u64 code_segment;
-	u64 flags;
-} interrupt_frame_t;
-
-static idt_entry_t idt[IDT_ENTRIES];
 static volatile u8 scancode_queue[KEYBOARD_QUEUE_SIZE];
 static volatile u32 queue_head;
 static volatile u32 queue_tail;
@@ -71,19 +49,6 @@ static void keyboard_irq_handler(interrupt_frame_t *frame)
 	outb(0x20, 0x20);
 }
 
-static void idt_set_gate(u32 vector, void (*handler)(interrupt_frame_t *))
-{
-	u64 address = (u64)(unsigned long)handler;
-
-	idt[vector].offset_low = (u16)address;
-	idt[vector].selector = 0x18;
-	idt[vector].ist = 0;
-	idt[vector].attributes = 0x8E;
-	idt[vector].offset_middle = (u16)(address >> 16);
-	idt[vector].offset_high = (u32)(address >> 32);
-	idt[vector].reserved = 0;
-}
-
 static void pic_remap(void)
 {
 	outb(0x21, 0xFF);
@@ -104,12 +69,7 @@ static void pic_remap(void)
 
 void keyboard_init(void)
 {
-	idtr_t idtr;
-	u64 *idt_words = (u64 *)idt;
-
 	__asm__ volatile("cli" ::: "memory");
-	for (u32 i = 0; i < IDT_ENTRIES * 2; i++)
-		idt_words[i] = 0;
 
 	queue_head = 0;
 	queue_tail = 0;
@@ -117,10 +77,9 @@ void keyboard_init(void)
 	caps_lock = 0;
 	extended_scancode = 0;
 
-	idt_set_gate(KEYBOARD_VECTOR, keyboard_irq_handler);
-	idtr.limit = sizeof(idt) - 1;
-	idtr.base = (u64)(unsigned long)idt;
-	__asm__ volatile("lidt %0" : : "m"(idtr));
+	interrupt_register_handler(
+		KEYBOARD_VECTOR,
+		(u64)(unsigned long long)keyboard_irq_handler);
 
 	pic_remap();
 	__asm__ volatile("sti" ::: "memory");
@@ -172,7 +131,6 @@ static int translate_scancode(u8 scancode, kernel_keyboard_event_t *event)
 		[0x33] = '.', [0x34] = '/', [0x35] = (char)0xF5, [0x39] = ' '
 	};
 	u8 key = scancode & 0x7F;
-
 	if (scancode == 0xE0) {
 		extended_scancode = 1;
 		return 0;
@@ -228,47 +186,34 @@ static int translate_scancode(u8 scancode, kernel_keyboard_event_t *event)
 	return 1;
 }
 
-static int dequeue_event(kernel_keyboard_event_t *event)
+static int dequeue_scancode(u8 *scancode)
 {
-	for (;;) {
-		__asm__ volatile("cli" ::: "memory");
-		if (queue_tail == queue_head) {
-			__asm__ volatile("sti" ::: "memory");
-			return 0;
-		}
-
-		u8 scancode = scancode_queue[queue_tail];
-		queue_tail = (queue_tail + 1) & KEYBOARD_QUEUE_MASK;
+	__asm__ volatile("cli" ::: "memory");
+	if (queue_tail == queue_head) {
 		__asm__ volatile("sti" ::: "memory");
-
-		if (translate_scancode(scancode, event))
-			return 1;
+		return 0;
 	}
+
+	*scancode = scancode_queue[queue_tail];
+	queue_tail = (queue_tail + 1) & KEYBOARD_QUEUE_MASK;
+	__asm__ volatile("sti" ::: "memory");
+	return 1;
 }
 
 void keyboard_poll(void)
 {
+	u8 scancode;
 	kernel_keyboard_event_t event;
-	while (dequeue_event(&event))
+	if (dequeue_scancode(&scancode)
+		&& translate_scancode(scancode, &event))
 		dispatch_callbacks(&event);
 }
 
-int keyboard_wait_event(kernel_keyboard_event_t *event)
+void keyboard_wait_for_interrupt(void)
 {
-	for (;;) {
-		__asm__ volatile("cli" ::: "memory");
-		if (queue_tail == queue_head) {
-			__asm__ volatile("sti; hlt" ::: "memory");
-			continue;
-		}
-
-		u8 scancode = scancode_queue[queue_tail];
-		queue_tail = (queue_tail + 1) & KEYBOARD_QUEUE_MASK;
+	__asm__ volatile("cli" ::: "memory");
+	if (queue_tail == queue_head)
+		__asm__ volatile("sti; hlt" ::: "memory");
+	else
 		__asm__ volatile("sti" ::: "memory");
-
-		if (translate_scancode(scancode, event)) {
-			dispatch_callbacks(event);
-			return 1;
-		}
-	}
 }

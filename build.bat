@@ -9,29 +9,37 @@ if /I "%1"=="clean" (
 	exit /b 0
 )
 
+if exist build rmdir /s /q build
 if not exist build mkdir build
 if not exist build\obj mkdir build\obj
 if exist build\kernel-objects.rsp del /q build\kernel-objects.rsp
 type nul > build\kernel-objects.rsp
 
-REM Compile the kernel and system sources; boot.c is the preceding boot stage.
-for /r src %%F in (*.c) do (
-	if /I "%%~fF"=="%CD%\src\bootloader\boot.c" (
-		rem boot.c needs KERNEL_SECTORS, known only after linking the kernel.
-	) else (
-		set "REL=%%~dpnF"
-		set "REL=!REL:%CD%\src\=!"
-		set "OBJ=build\obj\!REL!.o"
-		for %%D in ("!OBJ!") do if not exist "%%~dpD" mkdir "%%~dpD"
-		clang --target=x86_64-none-elf -ffreestanding -fno-pic -fno-stack-protector -fno-builtin -fno-asynchronous-unwind-tables -mno-sse -mno-mmx -mgeneral-regs-only -O2 -Wall -c "%%~fF" -o "!OBJ!" || goto :err
-		echo "!OBJ!">>build\kernel-objects.rsp
-	)
+REM Compile only the real kernel sources; ignore the old test/user sources that caused duplicate symbols.
+for /r src\kernel %%F in (*.c) do (
+	set "REL=%%~dpnF"
+	set "REL=!REL:%CD%\src\=!"
+	set "OBJ=build\obj\!REL!.o"
+	for %%D in ("!OBJ!") do if not exist "%%~dpD" mkdir "%%~dpD"
+	clang --target=x86_64-none-elf -Iinclude -ffreestanding -fno-pic -fno-stack-protector -fno-builtin -fno-asynchronous-unwind-tables -mno-sse -mno-mmx -mgeneral-regs-only -O2 -Wall -c "%%~fF" -o "!OBJ!" || goto :err
+	echo "!OBJ!">>build\kernel-objects.rsp
 )
 
 ld.lld -m elf_x86_64 --oformat binary -T module.ld @build\kernel-objects.rsp -o build\kernel.bin || goto :err
 for %%A in (build\kernel.bin) do set /a KERNEL_SECTORS=(%%~zA+511)/512
+
+REM Build the user process as a raw binary that will be mapped at 0x400000 in RAM.
+if exist src\user\program.c (
+	if not exist build\obj\user mkdir build\obj\user
+	clang --target=x86_64-elf -Iinclude -ffreestanding -fno-pie -fno-stack-protector -fno-builtin -fno-asynchronous-unwind-tables -mgeneral-regs-only -nostdlib -O2 -Wall -c src\user\program.c -o build\obj\user\program.o || goto :err
+	ld.lld -m elf_x86_64 -T user.ld -o build\user.elf build\obj\user\program.o || goto :err
+	objcopy -O binary build\user.elf build\user.bin || goto :err
+)
+set /a USER_LBA=2048
+if exist build\user.bin for %%A in (build\user.bin) do set /a USER_SECTORS=(%%~zA+511)/512
+
 if not exist build\obj\bootloader mkdir build\obj\bootloader
-clang --target=i386-none-elf -DKERNEL_SECTORS=!KERNEL_SECTORS! -ffreestanding -fno-pic -fno-stack-protector -fno-builtin -fno-asynchronous-unwind-tables -mno-sse -mno-mmx -O2 -Wall -c src\bootloader\boot.c -o build\obj\bootloader\boot.o || goto :err
+clang --target=i386-none-elf -Iinclude -DKERNEL_SECTORS=!KERNEL_SECTORS! -DUSER_LBA=!USER_LBA! -DUSER_SECTORS=!USER_SECTORS! -ffreestanding -fno-pic -fno-stack-protector -fno-builtin -fno-asynchronous-unwind-tables -mno-sse -mno-mmx -O2 -Wall -c src\bootloader\boot.c -o build\obj\bootloader\boot.o || goto :err
 nasm -f elf32 src\bootloader\longmode.asm -o build\obj\bootloader\longmode.o || goto :err
 ld.lld -m elf_i386 --oformat binary -T linker.ld build\obj\bootloader\boot.o build\obj\bootloader\longmode.o -o build\boot.bin || goto :err
 
@@ -45,7 +53,7 @@ if exist build\os.img goto :err
 if exist build\os-base.img del /q build\os-base.img
 if exist build\os-base.img goto :err
 copy /b build\bootloader.bin+build\boot.bin build\os-base.img >nul || goto :err
-powershell -NoProfile -Command "$f=[System.IO.File]::Open('build\os-base.img',[System.IO.FileMode]::Open,[System.IO.FileAccess]::Write); try { $kernel=[System.IO.File]::ReadAllBytes('build\kernel.bin'); $offset=[long]16*512; $f.SetLength($offset+[long]!KERNEL_SECTORS!*512); $f.Position=$offset; $f.Write($kernel,0,$kernel.Length) } finally { $f.Dispose() }" || goto :err
+powershell -NoProfile -Command "$f=[System.IO.File]::Open('build\os-base.img',[System.IO.FileMode]::Open,[System.IO.FileAccess]::Write); try { $kernel=[System.IO.File]::ReadAllBytes('build\kernel.bin'); $user=[System.IO.File]::ReadAllBytes('build\user.bin'); $offsetKernel=[long]16*512; $offsetUser=[long]2048*512; $f.SetLength($offsetUser+[long]$user.Length); $f.Position=$offsetKernel; $f.Write($kernel,0,$kernel.Length); $f.Position=$offsetUser; $f.Write($user,0,$user.Length) } finally { $f.Dispose() }" || goto :err
 pushd build
 qemu-img create -f qcow2 -F raw -b os-base.img os.img 5000000000 || goto :err
 popd
