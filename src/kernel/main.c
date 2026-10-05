@@ -13,7 +13,6 @@ __attribute__((section(".text.boot"))) void kmain(
 	kshell_init(memory_map, entry_count);
 	print_prefix();
 	println("Main event loop started.", 0x0A);
-	// run_user_program();
 	for (;;) {
 		keyboard_poll();
 		keyboard_wait_for_interrupt();
