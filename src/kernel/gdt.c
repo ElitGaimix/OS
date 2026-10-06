@@ -68,3 +68,8 @@ void gdt_init(void)
         "ltr %%ax\n"
         : : "m"(gdtr) : "rax", "memory");
 }
+
+void gdt_set_kernel_stack(u64 stack_top)
+{
+	tss.rsp0 = stack_top;
+}

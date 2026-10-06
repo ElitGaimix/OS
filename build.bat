@@ -21,22 +21,29 @@ for /r src\kernel %%F in (*.c) do (
 	set "REL=!REL:%CD%\src\=!"
 	set "OBJ=build\obj\!REL!.o"
 	for %%D in ("!OBJ!") do if not exist "%%~dpD" mkdir "%%~dpD"
-	clang --target=x86_64-none-elf -Iinclude -ffreestanding -fno-pic -fno-stack-protector -fno-builtin -fno-asynchronous-unwind-tables -mno-sse -mno-mmx -mgeneral-regs-only -O2 -Wall -c "%%~fF" -o "!OBJ!" || goto :err
+	clang --target=x86_64-none-elf -Iinclude -ffreestanding -fno-pic -fno-stack-protector -fno-builtin -fno-asynchronous-unwind-tables -mno-sse -mno-mmx -mno-red-zone -mgeneral-regs-only -O2 -Wall -c "%%~fF" -o "!OBJ!" || goto :err
 	echo "!OBJ!">>build\kernel-objects.rsp
 )
 
 ld.lld -m elf_x86_64 --oformat binary -T module.ld @build\kernel-objects.rsp -o build\kernel.bin || goto :err
 for %%A in (build\kernel.bin) do set /a KERNEL_SECTORS=(%%~zA+511)/512
 
-REM Build the user process as a raw binary that will be mapped at 0x400000 in RAM.
+REM Build user programs as raw binaries mapped at 0x400000 in RAM.
 if exist src\user\program.c (
 	if not exist build\obj\user mkdir build\obj\user
-	clang --target=x86_64-elf -Iinclude -ffreestanding -fno-pie -fno-stack-protector -fno-builtin -fno-asynchronous-unwind-tables -mgeneral-regs-only -nostdlib -O2 -Wall -c src\user\program.c -o build\obj\user\program.o || goto :err
+	clang --target=x86_64-elf -Iinclude -ffreestanding -fno-pie -fno-stack-protector -fno-builtin -fno-asynchronous-unwind-tables -mno-red-zone -mgeneral-regs-only -nostdlib -O2 -Wall -c src\user\program.c -o build\obj\user\program.o || goto :err
 	ld.lld -m elf_x86_64 -T user.ld -o build\user.elf build\obj\user\program.o || goto :err
 	objcopy -O binary build\user.elf build\user.bin || goto :err
+	clang --target=x86_64-elf -Iinclude -ffreestanding -fno-pie -fno-stack-protector -fno-builtin -fno-asynchronous-unwind-tables -mno-red-zone -mgeneral-regs-only -nostdlib -O2 -Wall -c src\user\ticker.c -o build\obj\user\ticker.o || goto :err
+	ld.lld -m elf_x86_64 -T user.ld -o build\ticker.elf build\obj\user\ticker.o || goto :err
+	objcopy -O binary build\ticker.elf build\ticker.bin || goto :err
 )
 set /a USER_LBA=2048
+set /a TICKER_LBA=2056
 if exist build\user.bin for %%A in (build\user.bin) do set /a USER_SECTORS=(%%~zA+511)/512
+if exist build\ticker.bin for %%A in (build\ticker.bin) do set /a TICKER_SECTORS=(%%~zA+511)/512
+if %USER_SECTORS% GTR 4 goto :err
+if %TICKER_SECTORS% GTR 4 goto :err
 
 if not exist build\obj\bootloader mkdir build\obj\bootloader
 clang --target=i386-none-elf -Iinclude -DKERNEL_SECTORS=!KERNEL_SECTORS! -DUSER_LBA=!USER_LBA! -DUSER_SECTORS=!USER_SECTORS! -ffreestanding -fno-pic -fno-stack-protector -fno-builtin -fno-asynchronous-unwind-tables -mno-sse -mno-mmx -O2 -Wall -c src\bootloader\boot.c -o build\obj\bootloader\boot.o || goto :err
@@ -53,7 +60,7 @@ if exist build\os.img goto :err
 if exist build\os-base.img del /q build\os-base.img
 if exist build\os-base.img goto :err
 copy /b build\bootloader.bin+build\boot.bin build\os-base.img >nul || goto :err
-powershell -NoProfile -Command "$f=[System.IO.File]::Open('build\os-base.img',[System.IO.FileMode]::Open,[System.IO.FileAccess]::Write); try { $kernel=[System.IO.File]::ReadAllBytes('build\kernel.bin'); $user=[System.IO.File]::ReadAllBytes('build\user.bin'); $offsetKernel=[long]16*512; $offsetUser=[long]2048*512; $f.SetLength($offsetUser+[long]$user.Length); $f.Position=$offsetKernel; $f.Write($kernel,0,$kernel.Length); $f.Position=$offsetUser; $f.Write($user,0,$user.Length) } finally { $f.Dispose() }" || goto :err
+powershell -NoProfile -Command "$f=[System.IO.File]::Open('build\os-base.img',[System.IO.FileMode]::Open,[System.IO.FileAccess]::Write); try { $kernel=[System.IO.File]::ReadAllBytes('build\kernel.bin'); $user=[System.IO.File]::ReadAllBytes('build\user.bin'); $ticker=[System.IO.File]::ReadAllBytes('build\ticker.bin'); $offsetKernel=[long]16*512; $offsetUser=[long]2048*512; $offsetTicker=[long]2056*512; $f.SetLength($offsetTicker+[long]$ticker.Length); $f.Position=$offsetKernel; $f.Write($kernel,0,$kernel.Length); $f.Position=$offsetUser; $f.Write($user,0,$user.Length); $f.Position=$offsetTicker; $f.Write($ticker,0,$ticker.Length) } finally { $f.Dispose() }" || goto :err
 pushd build
 qemu-img create -f qcow2 -F raw -b os-base.img os.img 5000000000 || goto :err
 popd

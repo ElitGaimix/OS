@@ -3,6 +3,7 @@
 #include <kernel/panic.h>
 #include <kernel/kshell.h>
 #include <kernel/drivers/inputs/keyboard.h>
+#include <kernel/process/pit.h>
 #include <kernel/gdt.h>
 
 __attribute__((section(".text.boot"))) void kmain(
@@ -11,6 +12,7 @@ __attribute__((section(".text.boot"))) void kmain(
 	panic_init();
 	gdt_init();
 	kshell_init(memory_map, entry_count);
+	pit_init();
 	print_prefix();
 	println("Main event loop started.", 0x0A);
 	for (;;) {

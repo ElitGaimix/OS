@@ -1,13 +1,18 @@
-// Programme utilisateur minimal pour tester l'execution en ring 3.
-// L'objectif est de faire quelque chose de simple et stable : ne rien faire, sauf hlt.
+#include <user/syscall.h>
 
 __attribute__((section(".text.entry")))
-void user_main(void)
+void user_main(user_syscall_u64 mode)
 {
-    volatile int a = 1;
-    volatile int b = 0;
-    volatile int x = a / b;
-    (void)x;
+    if (mode == 1)
+    {
+        volatile int dividend = 1;
+        volatile int divisor = 0;
+        volatile int result = dividend / divisor;
+        (void)result;
+    }
 
-    for (;;) {}
+    volatile user_syscall_u64 counter = 0;
+    while (counter < 300000000ULL)
+        counter++;
+    user_exit(0);
 }

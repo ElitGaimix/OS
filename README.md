@@ -16,9 +16,12 @@ processeur en mode 64 bits.
 
 Le noyau initialise notamment la GDT, l'IDT et la gestion des exceptions. Il
 affiche une console texte VGA, reçoit les entrées d'un clavier PS/2 et propose
-quelques commandes de test. Le dépôt contient aussi un programme utilisateur
-minimal et du code expérimental de gestion de processus ; ces éléments ne sont
-pas encore intégrés dans un environnement utilisateur complet.
+quelques commandes de test. Le kshell et les programmes utilisateur partagent
+maintenant un ordonnanceur round-robin simple, déclenché par le PIT. Le shell
+reste une tâche noyau en ring 0 ; le programme `hello` s'exécute en ring 3,
+revient au shell lorsqu'il se termine et peut être lancé depuis la console.
+Cette gestion de tâches reste expérimentale et ne constitue pas encore un
+environnement utilisateur complet.
 
 Le projet est susceptible de changer et peut contenir des fonctionnalités
 incomplètes ou temporaires. Il n'est pas destiné à être démarré sur du matériel
@@ -34,12 +37,18 @@ sont :
 - `shutdown` : tente d'arrêter l'émulateur ;
 - `panic` : affiche les types d'exceptions que l'on peut déclencher avec
   `panic div0`, `panic ud`, `panic bp`, `panic page` ou `panic gpf` ;
-- `usertest` : lance le programme utilisateur minimal, qui provoque
-  volontairement une division par zéro.
+- `hello` : ajoute le programme utilisateur à la file d'exécution. Le kshell
+  reste actif pendant son exécution et le programme se termine via un appel
+  système minimal ;
+- `ticker` : affiche huit messages séparés par une attente active. Le syscall
+  d'affichage copie une chaîne utilisateur courte et vérifie qu'elle reste
+  dans la mémoire mappée du programme ;
+- `crash` : lance le même binaire en mode test, qui provoque une exception
+  utilisateur. Le noyau arrête uniquement cette tâche et affiche l'exception.
 
-Les commandes `panic` et `usertest` déclenchent volontairement une exception
-et peuvent laisser la machine virtuelle arrêtée sur l'écran de panique. Elles
-sont destinées aux essais dans QEMU.
+Les commandes `panic` déclenchent volontairement une exception noyau et peuvent
+laisser la machine virtuelle arrêtée sur l'écran de panique. Elles sont
+destinées aux essais dans QEMU.
 
 ## Prérequis
 

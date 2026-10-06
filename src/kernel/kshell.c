@@ -23,6 +23,10 @@ typedef struct
 
 static console_t kernel_console;
 static volatile u16 *const VGA = (volatile u16 *)0xB8000;
+static char input[79];
+static unsigned int input_length = 0;
+
+static void draw_input_line(const char *prefix, const u8 color, const char *text);
 
 static inline void outb(u16 port, u8 v)
 {
@@ -123,6 +127,7 @@ static void reload(void)
             (u16)(((u16)character.color << 8) | (u8)character.character);
     }
     set_cursor(row, column);
+    draw_input_line("kernel", 0x0B, input);
 }
 
 void print(const char *text, u8 color)
@@ -206,9 +211,6 @@ void test(void)
     print("Result : ", 0x0F);
     println("OK", 0x0A);
 }
-
-static char input[79];
-static unsigned int input_length = 0;
 
 void shutdown(void)
 {
@@ -297,7 +299,6 @@ static void keyboad_callback(const kernel_keyboard_event_t *event)
     }
     else if (event->type == KERNEL_KEY_EVENT_ENTER)
     {
-        // TODO: Execute command
         print("kernel", 0x0B);
         print(" > ", 0x0A);
         print(input, 0x0F);
@@ -324,12 +325,14 @@ static void keyboad_callback(const kernel_keyboard_event_t *event)
             else if (res == -2)
             {
                 println("No available process slot", 0x0C);
-            }else if(res != 0){
-                print("Process crash with vector: ", 0x0C);
-                print_u64(res >> 1);
-                print(" (", 0x0C);
-                print(exception_names[res >> 1], 0x0C);
-                println(")", 0x0C);
+            }
+            else if (res == -3)
+            {
+                println("Could not load program from disk", 0x0C);
+            }
+            else if (res == 0)
+            {
+                println("Program queued", 0x0A);
             }
         }
             input_length = 0;
@@ -365,6 +368,7 @@ static void keyboad_callback(const kernel_keyboard_event_t *event)
         kernel_console.history_start = 0;
         kernel_console.history_length = 0;
         input[0] = '\0';
+        process_init();
         keyboard_register_callback(keyboad_callback);
         keyboard_init();
         reload();
@@ -377,5 +381,4 @@ static void keyboad_callback(const kernel_keyboard_event_t *event)
         print_u64(usable_ram_mib(memory_map, entry_count));
         println(" Mio", 0x0F);
         draw_input_line("kernel", 0x0B, "");
-        process_init();
     }

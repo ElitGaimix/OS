@@ -14,5 +14,6 @@ typedef unsigned long long u64;
 /* Construit la GDT du kernel (segments noyau + user + TSS), la charge,
  * recharge les registres de segment et le TSS. A appeler une seule fois au demarrage. */
 void gdt_init(void);
+void gdt_set_kernel_stack(u64 stack_top);
 
 #endif

@@ -9,5 +9,6 @@ typedef struct {
 
 void interrupts_init(void);
 void interrupt_register_handler(unsigned char vector, unsigned long long address);
+void interrupt_register_user_handler(unsigned char vector, unsigned long long address);
 
 #endif

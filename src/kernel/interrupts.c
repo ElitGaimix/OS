@@ -38,13 +38,23 @@ void interrupts_init(void)
 	__asm__ volatile("lidt %0" : : "m"(idtr));
 }
 
-void interrupt_register_handler(u8 vector, u64 address)
+static void interrupt_set_handler(u8 vector, u64 address, u8 attributes)
 {
 	idt[vector].offset_low = (u16)address;
 	idt[vector].selector = 0x18;
 	idt[vector].ist = 0;
-	idt[vector].attributes = 0x8E;
+	idt[vector].attributes = attributes;
 	idt[vector].offset_middle = (u16)(address >> 16);
 	idt[vector].offset_high = (u32)(address >> 32);
 	idt[vector].reserved = 0;
+}
+
+void interrupt_register_handler(u8 vector, u64 address)
+{
+	interrupt_set_handler(vector, address, 0x8E);
+}
+
+void interrupt_register_user_handler(u8 vector, u64 address)
+{
+	interrupt_set_handler(vector, address, 0xEE);
 }
