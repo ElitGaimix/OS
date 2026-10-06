@@ -2,6 +2,10 @@
 #define KERNEL_KSHELL_H
 
 #include <e820.h>
+#include <kernel/process/process.h>
+#include <kernel/drivers/inputs/keyboard.h>
+
+extern const char *const exception_names[32];
 
 void print_prefix(void);
 void println(const char *text, unsigned char color);

@@ -1,6 +1,3 @@
-
-#include <e820.h>
-#include <kernel/drivers/inputs/keyboard.h>
 #include <kernel/kshell.h>
 
 #define VGA_WIDTH 80
@@ -279,24 +276,6 @@ static void execute_panic_command(void)
     }
 }
 
-void enter_user(u64 rip, u64 rsp)
-{
-    __asm__ volatile(
-        "pushq $0x2B\n"  // SS user
-        "pushq %0\n"     // RSP user
-        "pushq $0x202\n" // RFLAGS : IF=1
-        "pushq $0x33\n"  // CS user
-        "pushq %1\n"     // RIP
-        "iretq\n"
-        : : "r"(rsp), "r"(rip) : "memory");
-    __builtin_unreachable();
-}
-
-void run_user_program(void)
-{
-    enter_user(0x400000, 0x5FFFF8);
-}
-
 static void keyboad_callback(const kernel_keyboard_event_t *event)
 {
     if (event->type == KERNEL_KEY_EVENT_CHARACTER)
@@ -327,61 +306,76 @@ static void keyboad_callback(const kernel_keyboard_event_t *event)
         {
             execute_panic_command();
         }
-        if (input_matches("shutdown"))
+        else if (input_matches("shutdown"))
         {
             shutdown();
         }
-        if (input_matches("test"))
+        else if (input_matches("test"))
         {
             test();
         }
-        if (input_matches("usertest"))
+        else
         {
-            run_user_program();
+            int res = process_exec(input);
+            if (res == -1)
+            {
+                println("Unknown program", 0x0C);
+            }
+            else if (res == -2)
+            {
+                println("No available process slot", 0x0C);
+            }else if(res != 0){
+                print("Process crash with vector: ", 0x0C);
+                print_u64(res >> 1);
+                print(" (", 0x0C);
+                print(exception_names[res >> 1], 0x0C);
+                println(")", 0x0C);
+            }
         }
-        input_length = 0;
-        input[0] = '\0';
-        draw_input_line("kernel", 0x0B, input);
+            input_length = 0;
+            input[0] = '\0';
+            draw_input_line("kernel", 0x0B, input);
+        }
     }
-}
 
-void print_prefix(void)
-{
-    print("[", 0x0F);
-    print("KERNEL", 0x03);
-    print("] ", 0x0F);
-}
-
-void kshell_init(const e820_entry_t *memory_map, e820_u32_t entry_count)
-{
-    unsigned int bit_count = sizeof(void *) * 8;
-    char digits[10];
-    unsigned int digit_count = 0;
-
-    do
+    void print_prefix(void)
     {
-        digits[digit_count++] = (char)('0' + bit_count % 10);
-        bit_count /= 10;
-    } while (bit_count);
+        print("[", 0x0F);
+        print("KERNEL", 0x03);
+        print("] ", 0x0F);
+    }
 
-    char bit_count_text[11];
-    for (unsigned int i = 0; i < digit_count; i++)
-        bit_count_text[i] = digits[digit_count - i - 1];
-    bit_count_text[digit_count] = '\0';
+    void kshell_init(const e820_entry_t *memory_map, e820_u32_t entry_count)
+    {
+        unsigned int bit_count = sizeof(void *) * 8;
+        char digits[10];
+        unsigned int digit_count = 0;
 
-    kernel_console.history_start = 0;
-    kernel_console.history_length = 0;
-    input[0] = '\0';
-    keyboard_register_callback(keyboad_callback);
-    keyboard_init();
-    reload();
-    print_prefix();
-    print("Starting kernel in ", 0x0F);
-    print(bit_count_text, 0x0A);
-    println(" bits...", 0x0F);
-    print_prefix();
-    print("RAM utilisable: ", 0x0F);
-    print_u64(usable_ram_mib(memory_map, entry_count));
-    println(" Mio", 0x0F);
-    draw_input_line("kernel", 0x0B, "");
-}
+        do
+        {
+            digits[digit_count++] = (char)('0' + bit_count % 10);
+            bit_count /= 10;
+        } while (bit_count);
+
+        char bit_count_text[11];
+        for (unsigned int i = 0; i < digit_count; i++)
+            bit_count_text[i] = digits[digit_count - i - 1];
+        bit_count_text[digit_count] = '\0';
+
+        kernel_console.history_start = 0;
+        kernel_console.history_length = 0;
+        input[0] = '\0';
+        keyboard_register_callback(keyboad_callback);
+        keyboard_init();
+        reload();
+        print_prefix();
+        print("Starting kernel in ", 0x0F);
+        print(bit_count_text, 0x0A);
+        println(" bits...", 0x0F);
+        print_prefix();
+        print("RAM utilisable: ", 0x0F);
+        print_u64(usable_ram_mib(memory_map, entry_count));
+        println(" Mio", 0x0F);
+        draw_input_line("kernel", 0x0B, "");
+        process_init();
+    }

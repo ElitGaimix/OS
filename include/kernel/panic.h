@@ -2,6 +2,7 @@
 #define KERNEL_PANIC_H
 
 #include <kernel/interrupts.h>
+#include <kernel/kshell.h>
 
 void panic_init(void);
 void kernel_panic_exception(

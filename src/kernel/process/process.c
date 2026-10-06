@@ -3,15 +3,8 @@
 #define USER_STACK  (USER_BASE + 0x200000 - 8)   /* haut du bloc de 2 Mio */
 #define FRAMES_BASE 0x2000000ULL                 /* 32 Mio : un bloc de 2 Mio par slot */
 
-#include <kernel/gdt.h>
-#include <kernel/process/process.h>
-#include <kernel/drivers/disk/harddrive.h>
-#include <kernel/utils/string.h>
 
-typedef unsigned char u8;
-typedef unsigned short u16;
-typedef unsigned int u32;
-typedef unsigned long long u64;
+#include <kernel/process/process.h>
 
 struct program { const char *name; u32 lba; u32 sectors; };
 

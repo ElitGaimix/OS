@@ -1,5 +1,5 @@
 #include <kernel/panic.h>
-#include <kernel/interrupts.h>
+#include <kernel/process/process.h>
 
 typedef unsigned char u8;
 typedef unsigned short u16;
@@ -10,7 +10,7 @@ typedef unsigned long long u64;
 
 static volatile u16 *const VGA = (volatile u16 *)0xB8000;
 
-static const char *const exception_names[32] = {
+const char *const exception_names[32] = {
     "Division Error",
     "Debug",
     "Non-maskable Interrupt",
@@ -157,6 +157,9 @@ static void write_hex(unsigned int row, unsigned int column, u64 value)
 void kernel_panic_exception(u8 vector, u64 error_code, interrupt_frame_t *frame)
 {
     __asm__ volatile("cli" ::: "memory");
+    if ((frame->code_segment & 3) == 3)
+        process_kill((vector << 1) + 1);
+
     int syshalt = 16;
     for (unsigned int i = 0; i < VGA_WIDTH * VGA_HEIGHT; i++)
         VGA[i] = (u16)((0x4F << 8) | ' ');
