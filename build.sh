@@ -6,10 +6,13 @@ cd "$SCRIPT_DIR"
 
 usage() {
     cat <<'EOF'
-Usage: ./build.sh [build|run|clean]
+Usage: ./build.sh [build|run|uefi|test|uefi-test|clean]
 
   build  Compile the OS and create build/os.img (default)
   run    Build the OS and launch it in QEMU
+  uefi   Build and launch the alternate UEFI boot path
+  test   Build the OS and run QEMU integration tests
+  uefi-test  Run the QEMU integration tests via UEFI
   clean  Remove generated build files
 EOF
 }
@@ -23,6 +26,9 @@ action="${1:-build}"
 case "$action" in
     build) target=all ;;
     run) target=run ;;
+    uefi) target=uefi ;;
+    test) target=test ;;
+    uefi-test) target=test-uefi ;;
     clean)
         command -v make >/dev/null 2>&1 || {
             printf 'Missing required tool: make\n' >&2
@@ -46,9 +52,15 @@ if [[ "$(uname -s)" != Linux ]]; then
     exit 1
 fi
 
-required_tools=(make clang ld.lld nasm objcopy qemu-img)
+required_tools=(make clang ld.lld nasm objcopy qemu-img python3)
 if [[ "$action" == run ]]; then
     required_tools+=(qemu-system-x86_64)
+fi
+if [[ "$action" == uefi || "$action" == test || "$action" == uefi-test ]]; then
+    required_tools+=(qemu-system-x86_64)
+fi
+if [[ "$action" == uefi || "$action" == uefi-test ]]; then
+    required_tools+=(lld-link)
 fi
 
 missing_tools=()

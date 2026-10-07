@@ -45,6 +45,11 @@ if exist build\ticker.bin for %%A in (build\ticker.bin) do set /a TICKER_SECTORS
 if %USER_SECTORS% GTR 4 goto :err
 if %TICKER_SECTORS% GTR 4 goto :err
 
+python tools\mkfs.py build\rootfs.bin program.elf=build\user.elf ticker.elf=build\ticker.elf || goto :err
+
+clang --target=x86_64-pc-win32-coff -Iinclude -ffreestanding -fno-stack-protector -fno-builtin -fno-asynchronous-unwind-tables -mno-red-zone -fshort-wchar -Wall -c src\uefi\boot.c -o build\uefi-boot.obj || goto :err
+lld-link /subsystem:efi_application /entry:efi_main /nodefaultlib /machine:x64 /base:0x1000000 /dynamicbase /out:build\BOOTX64.EFI build\uefi-boot.obj || goto :err
+
 if not exist build\obj\bootloader mkdir build\obj\bootloader
 clang --target=i386-none-elf -Iinclude -DKERNEL_SECTORS=!KERNEL_SECTORS! -DUSER_LBA=!USER_LBA! -DUSER_SECTORS=!USER_SECTORS! -ffreestanding -fno-pic -fno-stack-protector -fno-builtin -fno-asynchronous-unwind-tables -mno-sse -mno-mmx -O2 -Wall -c src\bootloader\boot.c -o build\obj\bootloader\boot.o || goto :err
 nasm -f elf32 src\bootloader\longmode.asm -o build\obj\bootloader\longmode.o || goto :err
@@ -60,13 +65,33 @@ if exist build\os.img goto :err
 if exist build\os-base.img del /q build\os-base.img
 if exist build\os-base.img goto :err
 copy /b build\bootloader.bin+build\boot.bin build\os-base.img >nul || goto :err
-powershell -NoProfile -Command "$f=[System.IO.File]::Open('build\os-base.img',[System.IO.FileMode]::Open,[System.IO.FileAccess]::Write); try { $kernel=[System.IO.File]::ReadAllBytes('build\kernel.bin'); $user=[System.IO.File]::ReadAllBytes('build\user.bin'); $ticker=[System.IO.File]::ReadAllBytes('build\ticker.bin'); $offsetKernel=[long]16*512; $offsetUser=[long]2048*512; $offsetTicker=[long]2056*512; $f.SetLength($offsetTicker+[long]$ticker.Length); $f.Position=$offsetKernel; $f.Write($kernel,0,$kernel.Length); $f.Position=$offsetUser; $f.Write($user,0,$user.Length); $f.Position=$offsetTicker; $f.Write($ticker,0,$ticker.Length) } finally { $f.Dispose() }" || goto :err
+powershell -NoProfile -Command "$f=[System.IO.File]::Open('build\os-base.img',[System.IO.FileMode]::Open,[System.IO.FileAccess]::Write); try { $kernel=[System.IO.File]::ReadAllBytes('build\kernel.bin'); $user=[System.IO.File]::ReadAllBytes('build\user.bin'); $ticker=[System.IO.File]::ReadAllBytes('build\ticker.bin'); $rootfs=[System.IO.File]::ReadAllBytes('build\rootfs.bin'); $offsetKernel=[long]16*512; $offsetUser=[long]2048*512; $offsetTicker=[long]2056*512; $offsetRootfs=[long]512*512; $f.SetLength($offsetTicker+[long]$ticker.Length); $f.Position=$offsetKernel; $f.Write($kernel,0,$kernel.Length); $f.Position=$offsetUser; $f.Write($user,0,$user.Length); $f.Position=$offsetTicker; $f.Write($ticker,0,$ticker.Length); $f.Position=$offsetRootfs; $f.Write($rootfs,0,$rootfs.Length) } finally { $f.Dispose() }" || goto :err
+python tools\mkefi.py build\uefi.img build\BOOTX64.EFI build\kernel.bin build\os-base.img || goto :err
 pushd build
 qemu-img create -f qcow2 -F raw -b os-base.img os.img 5000000000 || goto :err
 popd
 
 echo Build OK (%CS% secteurs pour boot.bin)
 if /i "%1"=="run" qemu-system-x86_64 -m 8G -drive format=qcow2,file=build/os.img
+if /i "%1"=="uefi" (
+	set "UEFI_BIOS=%QEMU_UEFI_BIOS%"
+	if not defined UEFI_BIOS set "UEFI_BIOS=C:\msys64\ucrt64\share\qemu\edk2-x86_64-code.fd"
+	if not exist "!UEFI_BIOS!" (
+		echo Set QEMU_UEFI_BIOS to the path of edk2-x86_64-code.fd.
+		goto :err
+	)
+	qemu-system-x86_64 -machine pc -m 128M -drive "if=pflash,format=raw,unit=0,file=!UEFI_BIOS!,readonly=on" -drive format=raw,if=ide,index=0,file=build\uefi.img -netdev user,id=net0 -device rtl8139,netdev=net0 -serial stdio || goto :err
+)
+if /i "%1"=="test" python tests\qemu_smoke.py --image build\os.img --qemu qemu-system-x86_64 || goto :err
+if /i "%1"=="uefi-test" (
+	set "UEFI_BIOS=%QEMU_UEFI_BIOS%"
+	if not defined UEFI_BIOS set "UEFI_BIOS=C:\msys64\ucrt64\share\qemu\edk2-x86_64-code.fd"
+	if not exist "!UEFI_BIOS!" (
+		echo Set QEMU_UEFI_BIOS to the path of edk2-x86_64-code.fd.
+		goto :err
+	)
+	python tests\qemu_smoke.py --image build\uefi.img --qemu qemu-system-x86_64 --uefi-firmware "!UEFI_BIOS!" || goto :err
+)
 exit /b 0
 
 :err

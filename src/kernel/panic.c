@@ -1,5 +1,6 @@
 #include <kernel/panic.h>
 #include <kernel/process/process.h>
+#include <kernel/serial.h>
 
 typedef unsigned char u8;
 typedef unsigned short u16;
@@ -159,11 +160,20 @@ void kernel_panic_exception(u8 vector, u64 error_code, interrupt_frame_t *frame)
     __asm__ volatile("cli" ::: "memory");
     if ((frame->code_segment & 3) == 3)
     {
+        serial_write("exception: user vector=");
+        serial_write_u64(vector);
+        serial_write("\n");
         println("User process terminated after an exception:", 0x0C);
         if (vector < 32)
             println(exception_names[vector], 0x0C);
-        process_kill((vector << 1) + 1);
+        current_process_kill(vector);
     }
+
+    serial_write("panic: kernel exception vector=");
+    serial_write_u64(vector);
+    serial_write(" error=");
+    serial_write_u64(error_code);
+    serial_write("\n");
 
     int syshalt = 16;
     for (unsigned int i = 0; i < VGA_WIDTH * VGA_HEIGHT; i++)

@@ -32,4 +32,34 @@ static inline int user_print(const char *text, user_syscall_u64 length)
     return (int)user_syscall(2, (user_syscall_u64)text, length);
 }
 
+static inline void *user_malloc(user_syscall_u64 size)
+{
+    return (void *)user_syscall(3, size, 0);
+}
+
+static inline int user_free(void *pointer)
+{
+    return (int)user_syscall(4, (user_syscall_u64)pointer, 0);
+}
+
+static inline int user_spawn(const char *name)
+{
+    return (int)user_syscall(5, (user_syscall_u64)name, 0);
+}
+
+static inline int user_wait(int pid)
+{
+    return (int)user_syscall(6, (user_syscall_u64)pid, 0);
+}
+
+static inline void user_sleep(user_syscall_u64 ticks)
+{
+    user_syscall(7, ticks, 0);
+}
+
+static inline int user_getpid(void)
+{
+    return (int)user_syscall(8, 0, 0);
+}
+
 #endif

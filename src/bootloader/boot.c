@@ -109,11 +109,14 @@ static u32 usable_ram_mib(u32 map_addr, u32 map_count) {
 #define ATA_LBA2   0x1F5
 #define ATA_DRIVE  0x1F6
 #define ATA_CMD    0x1F7   /* ecriture : commande, lecture : statut */
+#define ATA_LBA28_SECTOR_COUNT 0x10000000U
+#define ATA_POLL_LIMIT 0x100000U
 #define KERNEL_LBA 16
 #define KERNEL_ADDRESS 0x100000
 #define PML4_ADDRESS 0x70000
 #define PDPT_ADDRESS 0x71000
 #define PD_ADDRESS 0x72000
+#define PAGE_DIRECTORY_COUNT 4
 #ifndef KERNEL_SECTORS
 #define KERNEL_SECTORS 1
 #endif
@@ -128,30 +131,45 @@ static u32 usable_ram_mib(u32 map_addr, u32 map_count) {
 __attribute__((noreturn)) void enter_long_mode(
     u32 pml4_address, u32 entry_address, u32 map_addr, u32 map_count);
 
-/* Mappe les premiers 1 Gio en identite avec des pages de 2 Mio. */
+/* Mappe les premiers 4 Gio en identite avec des pages de 2 Mio. */
 static void init_long_mode_pages(void) {
     u64 *pml4 = (u64 *)PML4_ADDRESS;
     u64 *pdpt = (u64 *)PDPT_ADDRESS;
-    u64 *pd = (u64 *)PD_ADDRESS;
 
     for (u32 i = 0; i < 512; i++) {
         pml4[i] = 0;
         pdpt[i] = 0;
-        pd[i] = ((u64)i << 21) | 0x83;
     }
 
     pml4[0] = PDPT_ADDRESS | 0x07;
-    pdpt[0] = PD_ADDRESS | 0x07;
+    for (u32 directory = 0; directory < PAGE_DIRECTORY_COUNT; directory++) {
+        u64 *pd = (u64 *)(PD_ADDRESS + directory * 0x1000);
+        pdpt[directory] = (u64)pd | 0x07;
+        for (u32 page = 0; page < 512; page++) {
+            u64 physical = ((u64)directory * 512 + page) << 21;
+            pd[page] = physical | 0x83;
+        }
+    }
 
     /* Region 0x400000-0x5FFFFF accessible au ring 3 (APRES la boucle) */
-    pd[2] = ((u64)2 << 21) | 0x87;
+    ((u64 *)PD_ADDRESS)[2] = ((u64)2 << 21) | 0x87;
 }
 
 /* Attend que le disque ATA soit pret a transferer des donnees. */
+static int ata_wait_not_busy(void) {
+    for (u32 i = 0; i < ATA_POLL_LIMIT; i++) {
+        u8 s = inb(ATA_CMD);
+        if (s == 0 || s == 0xFF) return -1;
+        if (!(s & 0x80)) return 0;
+    }
+    return -1;
+}
+
 static int ata_wait_drq(void) {
-    for (u32 i = 0; i < 0x1000000; i++) {
+    for (u32 i = 0; i < ATA_POLL_LIMIT; i++) {
         u8 s = inb(ATA_CMD);
         if (s & 0x21) return -1;                   /* ERR ou DF */
+        if (s == 0 || s == 0xFF) return -1;
         if (!(s & 0x80) && (s & 0x08)) return 0;   /* BSY=0 et DRQ=1 */
     }
     return -1;
@@ -160,9 +178,13 @@ static int ata_wait_drq(void) {
 /* Lit 'count' secteurs a partir de 'lba' vers 'dst' (n'importe quelle adresse 32 bits) */
 /* Utilise le mode ATA PIO pour lire des secteurs LBA28. */
 static int ata_read(u32 lba, u32 count, void *dst) {
+    if ((!dst && count) || lba >= ATA_LBA28_SECTOR_COUNT
+        || count > ATA_LBA28_SECTOR_COUNT - lba)
+        return -1;
+
     volatile u16 *p = (volatile u16 *)dst;
     while (count--) {
-        while (inb(ATA_CMD) & 0x80) {}             /* attendre BSY=0 */
+        if (ata_wait_not_busy() != 0) return -1;
         outb(ATA_DRIVE, 0xE0 | ((lba >> 24) & 0x0F));
         outb(ATA_COUNT, 1);
         outb(ATA_LBA0, lba & 0xFF);
@@ -193,6 +215,27 @@ static int ata_identify(u16 info[256], u32 *sector_count) {
     if (!(info[49] & (1 << 9))) return -1;       /* LBA non supporte */
     *sector_count = ((u32)info[61] << 16) | info[60];
     return *sector_count ? 0 : -1;
+}
+
+static void enable_nx_if_supported(void) {
+    u32 eax = 0x80000000;
+    u32 ebx, ecx, edx;
+    __asm__ volatile("cpuid" : "+a"(eax), "=b"(ebx), "=c"(ecx), "=d"(edx));
+    if (eax < 0x80000001) return;
+
+    eax = 0x80000001;
+    __asm__ volatile("cpuid" : "+a"(eax), "=b"(ebx), "=c"(ecx), "=d"(edx));
+    if (!(edx & (1U << 20))) return;
+
+    u32 efer_low, efer_high;
+    __asm__ volatile(
+        "rdmsr"
+        : "=a"(efer_low), "=d"(efer_high)
+        : "c"(0xC0000080));
+    efer_low |= 1U << 11;
+    __asm__ volatile(
+        "wrmsr"
+        : : "a"(efer_low), "d"(efer_high), "c"(0xC0000080));
 }
 
 /* ---------- point d'entree (place en tete du binaire par linker.ld) ---------- */
@@ -229,6 +272,7 @@ void boot_main(u32 map_addr, u32 map_count) {
 
     if (ata_read(KERNEL_LBA, KERNEL_SECTORS, (void *)KERNEL_ADDRESS) == 0
         && ata_read(USER_LBA, USER_SECTORS, (void *)USER_ADDRESS) == 0) {
+        enable_nx_if_supported();
         init_long_mode_pages();
         enter_long_mode(PML4_ADDRESS, KERNEL_ADDRESS, map_addr, map_count);
     } else {

@@ -1,4 +1,9 @@
 #include <kernel/kshell.h>
+#include <kernel/memory/physical.h>
+#include <kernel/memory/heap.h>
+#include <kernel/serial.h>
+#include <kernel/pci.h>
+#include <kernel/fs/tinyfs.h>
 
 #define VGA_WIDTH 80
 #define VGA_HEIGHT 25
@@ -207,6 +212,31 @@ static void draw_input_line(const char *prefix, const u8 color, const char *text
 
 void test(void)
 {
+    u8 *first = kmalloc(37);
+    u8 *second = kmalloc(4096);
+    if (!first || !second)
+    {
+        kfree(first);
+        kfree(second);
+        println("Kernel heap allocation failed", 0x0C);
+        serial_write("heap: kernel allocator failed\n");
+        return;
+    }
+
+    first[0] = 0x5A;
+    second[4095] = 0xA5;
+    if (first[0] != 0x5A || second[4095] != 0xA5)
+    {
+        kfree(first);
+        kfree(second);
+        println("Kernel heap data check failed", 0x0C);
+        serial_write("heap: kernel allocator failed\n");
+        return;
+    }
+    kfree(first);
+    kfree(second);
+    serial_write("heap: kernel allocator passed\n");
+
     println("Test out.c", 0x0F);
     print("Result : ", 0x0F);
     println("OK", 0x0A);
@@ -239,6 +269,55 @@ static char *input_get_argument(void)
     while (input[index] == ' ')
         index++;
     return &input[index];
+}
+
+static u32 text_length(const char *text)
+{
+    u32 length = 0;
+    while (text[length])
+        length++;
+    return length;
+}
+
+static int input_get_integer_argument(int *value)
+{
+    const char *argument = input_get_argument();
+    int parsed = 0;
+    if (!*argument)
+        return -1;
+
+    while (*argument)
+    {
+        if (*argument < '0' || *argument > '9')
+            return -1;
+        int digit = *argument++ - '0';
+        if (parsed > (0x7FFFFFFF - digit) / 10)
+            return -1;
+        parsed = parsed * 10 + digit;
+    }
+
+    *value = parsed;
+    return 0;
+}
+
+static int input_split_file_arguments(char **name, char **contents)
+{
+    char *arguments = input_get_argument();
+    char *separator = arguments;
+    while (*separator && *separator != ' ')
+        separator++;
+    if (!*separator)
+        return -1;
+
+    *separator++ = '\0';
+    while (*separator == ' ')
+        separator++;
+    if (!*arguments || !*separator)
+        return -1;
+
+    *name = arguments;
+    *contents = separator;
+    return 0;
 }
 
 static int input_starts_with_command(const char *command)
@@ -325,9 +404,127 @@ static void keyboad_callback(const kernel_keyboard_event_t *event)
         {
             test();
         }
+        else if (input_matches("memory"))
+        {
+            unsigned int free_pages = physical_page_free_count();
+            print("Pages libres: ", 0x0F);
+            print_u64(free_pages);
+            print(" (", 0x0F);
+            print_u64(free_pages >> 8);
+            println(" Mio)", 0x0F);
+        }
+        else if (input_matches("pci"))
+        {
+            int devices = pci_scan();
+            print("PCI devices: ", 0x0F);
+            print_u64((u64)devices);
+            println(" (details in serial log)", 0x0F);
+        }
+        else if (input_matches("files"))
+        {
+            tinyfs_dirent_t entries[16];
+            int count = tinyfs_list(entries, 16);
+            if (count < 0)
+            {
+                println("Filesystem unavailable", 0x0C);
+            }
+            else
+            {
+                for (int i = 0; i < count; i++)
+                {
+                    print(entries[i].name, 0x0F);
+                    print(" (", 0x0F);
+                    print_u64(entries[i].size);
+                    println(" bytes)", 0x0F);
+                }
+            }
+        }
+        else if (input_starts_with_command("cat"))
+        {
+            tinyfs_file_t file;
+            char *name = input_get_argument();
+            if (!*name || tinyfs_open(name, &file) != 0)
+            {
+                println("Usage: cat <file>", 0x0C);
+            }
+            else if (file.size >= 2048)
+            {
+                println("File too large for console display", 0x0C);
+            }
+            else
+            {
+                char contents[2048];
+                if (tinyfs_read(&file, 0, file.size, contents) != 0)
+                {
+                    println("Could not read file", 0x0C);
+                }
+                else
+                {
+                    contents[file.size] = '\0';
+                    println(contents, 0x0F);
+                    serial_write("shell: cat succeeded\n");
+                }
+            }
+        }
+        else if (input_starts_with_command("put"))
+        {
+            char *name;
+            char *contents;
+            if (input_split_file_arguments(&name, &contents) != 0)
+            {
+                println("Usage: put <file> <text>", 0x0C);
+            }
+            else if (tinyfs_write(name, contents, text_length(contents)) != 0)
+            {
+                println("Could not write file", 0x0C);
+            }
+            else
+            {
+                println("File written", 0x0A);
+            }
+        }
+        else if (input_starts_with_command("rm"))
+        {
+            char *name = input_get_argument();
+            if (!*name || tinyfs_remove(name) != 0)
+                println("Usage: rm <file>", 0x0C);
+            else
+                println("File removed", 0x0A);
+        }
+        else if (input_starts_with_command("wait"))
+        {
+            int pid;
+            if (input_get_integer_argument(&pid) != 0)
+            {
+                println("Usage: wait <pid>", 0x0C);
+            }
+            else
+            {
+                int exit_code;
+                int result = process_reap(pid, &exit_code);
+                serial_write("shell: reap pid=");
+                serial_write_u64((unsigned long long)pid);
+                serial_write(" result=");
+                serial_write_u64((unsigned long long)result);
+                serial_write("\n");
+                if (result == PROCESS_REAP_RUNNING)
+                    println("Process has not exited yet", 0x0E);
+                else if (result == PROCESS_REAP_NOT_FOUND)
+                    println("No completed child with that PID", 0x0C);
+                else
+                {
+                    print("Exit code: ", 0x0F);
+                    print_u64((u64)exit_code);
+                    println("", 0x0F);
+                }
+            }
+        }
         else if (input_starts_with_command("kill"))
         {
-            int res = process_kill(input_get_argument()[0] - '0');
+            int pid;
+            int res = input_get_integer_argument(&pid) == 0
+                ? process_kill(pid)
+                : 0;
             if (res == -1)
             {
                 println("Could not kill process : Permission denied", 0x0C);
@@ -341,7 +538,7 @@ static void keyboad_callback(const kernel_keyboard_event_t *event)
 
             }
         }
-        else if (input_matches("active_tasks"))
+        else if (input_matches("tasks"))
         {
             process_task_info_t active_tasks[PROCESS_MAX_TASKS];
             int task_count =
@@ -391,6 +588,10 @@ static void keyboad_callback(const kernel_keyboard_event_t *event)
             {
                 println("Could not load program from disk", 0x0C);
             }
+            else if (res == -4)
+            {
+                println("Not enough managed memory for program", 0x0C);
+            }
             else if (res == 0)
             {
                 println("Program queued", 0x0A);
@@ -429,7 +630,7 @@ static void keyboad_callback(const kernel_keyboard_event_t *event)
         kernel_console.history_start = 0;
         kernel_console.history_length = 0;
         input[0] = '\0';
-        process_init();
+        process_init(memory_map, entry_count);
         keyboard_register_callback(keyboad_callback);
         keyboard_init();
         reload();
@@ -441,5 +642,9 @@ static void keyboad_callback(const kernel_keyboard_event_t *event)
         print("RAM utilisable: ", 0x0F);
         print_u64(usable_ram_mib(memory_map, entry_count));
         println(" Mio", 0x0F);
+        print_prefix();
+        print("Pages libres gerees: ", 0x0F);
+        print_u64(physical_page_free_count());
+        println("", 0x0F);
         draw_input_line("kernel", 0x0B, "");
     }
