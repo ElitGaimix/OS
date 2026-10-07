@@ -1,5 +1,5 @@
 #define MAX_PROCESSES 4
-#define MAX_TASKS (MAX_PROCESSES + 1)
+#define MAX_TASKS PROCESS_MAX_TASKS
 #define USER_BASE 0x400000ULL
 #define USER_SIZE 0x200000ULL
 #define USER_STACK (USER_BASE + 0x200000 - 8)
@@ -61,6 +61,7 @@ struct cpu_context
 
 struct task
 {
+    int pid;
     int used;
     int user;
     enum task_state state;
@@ -71,6 +72,7 @@ struct task
     u8 kernel_stack[KERNEL_STACK_SIZE] __attribute__((aligned(16)));
 };
 
+static int next_pid = 1;
 static u64 page_tables[MAX_PROCESSES][3][512] __attribute__((aligned(4096)));
 static struct task tasks[MAX_TASKS];
 static struct task *current_task;
@@ -225,6 +227,7 @@ void process_init(void)
     shell->user = 0;
     shell->state = TASK_RUNNING;
     shell->cr3 = kernel_cr3;
+    shell->pid = 0;
     current_task = shell;
     current_index = 0;
 
@@ -257,6 +260,8 @@ int process_exec(const char *name)
     task->state = TASK_FREE;
     task->exit_code = 0;
     task->frame = FRAMES_BASE + (u64)(slot - 1) * 0x200000;
+    task->pid = next_pid;
+    next_pid++;
 
     u8 *memory = (u8 *)task->frame;
     for (u64 i = 0; i < 0x200000; i++)
@@ -347,12 +352,55 @@ u64 *process_syscall_dispatch(u64 *saved_context)
     return saved_context;
 }
 
-void process_kill(int code) __attribute__((noreturn));
-void process_kill(int code)
+void current_process_kill(int code) __attribute__((noreturn));
+void current_process_kill(int code)
 {
     if (current_task && current_task->user)
         current_task->exit_code = code;
 
     u64 *context = schedule(0, 1);
     process_restore_context(context);
+}
+
+int process_kill(int pid)
+{
+    int result = 0;
+    for (int i = 0; i < MAX_TASKS; i++){
+        if (tasks[i].pid == pid && tasks[i].used){
+            if (tasks[i].user){
+                tasks[i].state = TASK_FREE;
+                tasks[i].used = 0;
+                result = 1;
+            }else
+                result = -1;
+        }
+    }
+    return result;
+}
+
+int get_actives_tasks(process_task_info_t *tasks_out, int capacity)
+{
+    if (capacity < 0 || (!tasks_out && capacity > 0))
+        return -1;
+
+    int active_count = 0;
+    for (int i = 0; i < MAX_TASKS; i++)
+    {
+        const struct task *task = &tasks[i];
+        if (!task->used)
+            continue;
+
+        if (active_count < capacity)
+        {
+            tasks_out[active_count].pid = task->pid;
+            tasks_out[active_count].user = task->user;
+            tasks_out[active_count].state =
+                task->state == TASK_RUNNING
+                    ? PROCESS_TASK_RUNNING
+                    : PROCESS_TASK_READY;
+        }
+        active_count++;
+    }
+
+    return active_count;
 }

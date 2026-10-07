@@ -43,6 +43,8 @@ sont :
 - `ticker` : affiche huit messages séparés par une attente active. Le syscall
   d'affichage copie une chaîne utilisateur courte et vérifie qu'elle reste
   dans la mémoire mappée du programme ;
+- `active_tasks` : affiche le PID, le niveau (noyau/utilisateur) et l'état des
+  tâches actives ;
 - `crash` : lance le même binaire en mode test, qui provoque une exception
   utilisateur. Le noyau arrête uniquement cette tâche et affiche l'exception.
 

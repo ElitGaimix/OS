@@ -231,6 +231,16 @@ static int input_matches(const char *command)
     return input[index] == '\0' && command[index] == '\0';
 }
 
+static char *input_get_argument(void)
+{
+    unsigned int index = 0;
+    while (input[index] && input[index] != ' ')
+        index++;
+    while (input[index] == ' ')
+        index++;
+    return &input[index];
+}
+
 static int input_starts_with_command(const char *command)
 {
     unsigned int index = 0;
@@ -314,6 +324,57 @@ static void keyboad_callback(const kernel_keyboard_event_t *event)
         else if (input_matches("test"))
         {
             test();
+        }
+        else if (input_starts_with_command("kill"))
+        {
+            int res = process_kill(input_get_argument()[0] - '0');
+            if (res == -1)
+            {
+                println("Could not kill process : Permission denied", 0x0C);
+            }else if (res == 0)
+            {
+                println("Could not kill process : Process not found", 0x0C);
+            }
+            else
+            {
+                println("Process killed", 0x0A);
+
+            }
+        }
+        else if (input_matches("active_tasks"))
+        {
+            process_task_info_t active_tasks[PROCESS_MAX_TASKS];
+            int task_count =
+                get_actives_tasks(active_tasks, PROCESS_MAX_TASKS);
+
+            if (task_count < 0)
+            {
+                println("Could not retrieve active tasks", 0x0C);
+            }
+            else if (task_count == 0)
+            {
+                println("No active tasks", 0x0E);
+            }
+            else
+            {
+                int displayed_count =
+                    task_count < PROCESS_MAX_TASKS
+                        ? task_count
+                        : PROCESS_MAX_TASKS;
+                for (int i = 0; i < displayed_count; i++)
+                {
+                    print("Task ", 0x0F);
+                    print_u64((u64)active_tasks[i].pid);
+                    print(active_tasks[i].user ? " User " : " Kernel ", 0x0F);
+                    println(
+                        active_tasks[i].state == PROCESS_TASK_RUNNING
+                            ? "RUNNING"
+                            : "READY",
+                        active_tasks[i].state == PROCESS_TASK_RUNNING
+                            ? 0x0A
+                            : 0x0E);
+                }
+            }
         }
         else
         {
