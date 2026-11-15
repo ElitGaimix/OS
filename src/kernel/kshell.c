@@ -7,55 +7,22 @@
 
 #define VGA_WIDTH 80
 #define VGA_HEIGHT 25
-#define CONSOLE_HISTORY_CAPACITY 2048
 
 typedef unsigned char u8;
 typedef unsigned short u16;
 typedef unsigned long long u64;
 
-typedef struct
-{
-    char character;
-    unsigned char color;
-} console_char_t;
-
-typedef struct
-{
-    console_char_t history[CONSOLE_HISTORY_CAPACITY];
-    unsigned int history_start;
-    unsigned int history_length;
-} console_t;
-
-static console_t kernel_console;
 static volatile u16 *const VGA = (volatile u16 *)0xB8000;
 static char input[79];
 static unsigned int input_length = 0;
+static int output_row;
+static int output_column;
 
 static void draw_input_line(const char *prefix, const u8 color, const char *text);
 
 static inline void outb(u16 port, u8 v)
 {
     __asm__ volatile("outb %0, %1" : : "a"(v), "Nd"(port));
-}
-
-static void history_push(char character, u8 color)
-{
-    unsigned int index;
-
-    if (kernel_console.history_length < CONSOLE_HISTORY_CAPACITY)
-    {
-        index = (kernel_console.history_start + kernel_console.history_length) % CONSOLE_HISTORY_CAPACITY;
-        kernel_console.history_length++;
-    }
-    else
-    {
-        index = kernel_console.history_start;
-        kernel_console.history_start =
-            (kernel_console.history_start + 1) % CONSOLE_HISTORY_CAPACITY;
-    }
-
-    kernel_console.history[index].character = character;
-    kernel_console.history[index].color = color;
 }
 
 static void set_cursor(int row, int column)
@@ -74,6 +41,8 @@ static void clear_screen(void)
 {
     for (int i = 0; i < VGA_WIDTH * VGA_HEIGHT; i++)
         VGA[i] = 0x0720;
+    output_row = 0;
+    output_column = 0;
 }
 
 static void scroll_screen(void)
@@ -91,63 +60,56 @@ static void scroll_screen(void)
         VGA[(VGA_HEIGHT - 2) * VGA_WIDTH + column] = 0x0720;
 }
 
-static void next_line(int *row, int *column)
+static void next_output_line(void)
 {
-    *column = 0;
-    (*row)++;
-    if (*row >= VGA_HEIGHT - 1)
+    output_column = 0;
+    output_row++;
+    if (output_row >= VGA_HEIGHT - 1)
     {
         scroll_screen();
-        *row = VGA_HEIGHT - 2;
+        output_row = VGA_HEIGHT - 2;
     }
 }
 
-static void reload(void)
+static void write_output_character(char character, u8 color)
 {
-    int row = 0;
-    int column = 0;
-
-    clear_screen();
-    for (unsigned int i = 0; i < kernel_console.history_length; i++)
+    if (character == '\n')
     {
-        unsigned int index = (kernel_console.history_start + i) % CONSOLE_HISTORY_CAPACITY;
-        console_char_t character = kernel_console.history[index];
-
-        if (character.character == '\n')
-        {
-            next_line(&row, &column);
-            continue;
-        }
-
-        if (column >= VGA_WIDTH)
-        {
-            next_line(&row, &column);
-            VGA[row * VGA_WIDTH + column++] =
-                (u16)((0x0F << 8) | '-');
-            VGA[row * VGA_WIDTH + column++] =
-                (u16)((0x0F << 8) | ' ');
-        }
-
-        VGA[row * VGA_WIDTH + column++] =
-            (u16)(((u16)character.color << 8) | (u8)character.character);
+        next_output_line();
+        return;
     }
-    set_cursor(row, column);
+
+    if (output_column >= VGA_WIDTH)
+    {
+        next_output_line();
+        VGA[output_row * VGA_WIDTH + output_column++] =
+            (u16)((0x0F << 8) | '-');
+        VGA[output_row * VGA_WIDTH + output_column++] =
+            (u16)((0x0F << 8) | ' ');
+    }
+
+    VGA[output_row * VGA_WIDTH + output_column++] =
+        (u16)(((u16)color << 8) | (u8)character);
+}
+
+static void redraw_input_line(void)
+{
     draw_input_line("kernel", 0x0B, input);
 }
 
 void print(const char *text, u8 color)
 {
     for (int i = 0; text[i]; i++)
-        history_push(text[i], color);
-    reload();
+        write_output_character(text[i], color);
+    redraw_input_line();
 }
 
 void println(const char *text, u8 color)
 {
     for (int i = 0; text[i]; i++)
-        history_push(text[i], color);
-    history_push('\n', color);
-    reload();
+        write_output_character(text[i], color);
+    write_output_character('\n', color);
+    redraw_input_line();
 }
 
 static e820_u64_t usable_ram_mib(
@@ -627,13 +589,11 @@ static void keyboad_callback(const kernel_keyboard_event_t *event)
             bit_count_text[i] = digits[digit_count - i - 1];
         bit_count_text[digit_count] = '\0';
 
-        kernel_console.history_start = 0;
-        kernel_console.history_length = 0;
         input[0] = '\0';
         process_init(memory_map, entry_count);
         keyboard_register_callback(keyboad_callback);
         keyboard_init();
-        reload();
+        clear_screen();
         print_prefix();
         print("Starting kernel in ", 0x0F);
         print(bit_count_text, 0x0A);
